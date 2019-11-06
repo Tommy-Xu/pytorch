@@ -583,7 +583,12 @@ def _run_symbolic_function(g, n, inputs, env, operator_export_type=OperatorExpor
         from torch.onnx.symbolic_helper import _export_onnx_opset_version as opset_version
         import torch.onnx.symbolic_registry as sym_registry
 
-        sym_registry.register_version('', opset_version)
+        if operator_export_type == OperatorExportTypes.ONNX_ATEN_FALLBACK:
+            import torch.onnx.symbolic_caffe2 as sym_caffe2
+            sym_caffe2.register_quantized_ops('caffe2', opset_version)
+        else:
+            sym_registry.register_version('', opset_version)
+
 
         # See Note [Export inplace]
         # TODO: I think this is not necessary anymore
@@ -592,7 +597,6 @@ def _run_symbolic_function(g, n, inputs, env, operator_export_type=OperatorExpor
         else:
             ns_op_name = n.kind()
         ns, op_name = ns_op_name.split("::")
-
         if ns == "onnx":
             # Use the original node directly
             return None
@@ -654,6 +658,19 @@ def _run_symbolic_function(g, n, inputs, env, operator_export_type=OperatorExpor
                 symbolic_fn = sym_registry.get_registered_op(symbolic_name, '', opset_version)
                 attrs = {k: n[k] for k in n.attributeNames()}
                 return symbolic_fn(g, *inputs, **attrs)
+
+        elif ns == "quantized":
+            domain = ''
+            if operator_export_type == OperatorExportTypes.ONNX_ATEN_FALLBACK:
+                domain = 'caffe2'
+            attrs = {k: n[k] for k in n.attributeNames()}
+
+            if not sym_registry.is_registered_op(op_name, domain, opset_version):
+                warnings.warn("ONNX export failed on quantized operator {}::{} because "
+                              "torch.onnx.symbolic_opset{}.{} does not exist. "
+                              .format(ns, op_name, opset_version, op_name))
+            op_fn = sym_registry.get_registered_op(op_name, domain, opset_version)
+            return op_fn(g, *inputs, **attrs)
 
         # custom ops
         elif sym_registry.is_registered_version(ns, opset_version):
